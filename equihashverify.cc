@@ -1,13 +1,12 @@
 #include <nan.h>
-#include <node.h>
 #include <node_buffer.h>
-#include <v8.h>
+#include <node_api.h>
 #include <stdint.h>
 #include "crypto/equihash.h"
 
 
 #include <vector>
-using namespace v8;
+
 
 int verifyEH(const char *hdr, const std::vector<unsigned char> &soln, unsigned int n = 200, unsigned int k = 9){
   // Hash state
@@ -36,51 +35,84 @@ int verifyEH(const char *hdr, const std::vector<unsigned char> &soln, unsigned i
   return isValid;
 }
 
-void Verify(const v8::FunctionCallbackInfo<Value>& args) {
-  Isolate* isolate = Isolate::GetCurrent();
-  HandleScope scope(isolate);
 
-  unsigned int n = 200;
-  unsigned int k = 9;
+napi_value Verify(napi_env env, napi_callback_info info) {
+    napi_status status;
+    size_t argc = 4;
+    napi_value args[4];
+    status = napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-  if (args.Length() < 2) {
-  isolate->ThrowException(Exception::TypeError(
-    String::NewFromUtf8(isolate, "Wrong number of arguments")));
-  return;
-  }
+    if (status != napi_ok || argc < 2) {
+        napi_throw_type_error(env, nullptr, "Wrong number of arguments");
+        return nullptr;
+    }
 
-  Local<Object> header = args[0]->ToObject();
-  Local<Object> solution = args[1]->ToObject();
+    // Check if the arguments are buffers
+    bool isBuffer;
+    size_t bufferLength;
+    void* bufferData;
 
-  if (args.Length() == 4) {
-    n = args[2]->Uint32Value();
-    k = args[3]->Uint32Value();
-  }
+    // Header buffer
+    status = napi_is_buffer(env, args[0], &isBuffer);
+    if (!isBuffer || status != napi_ok) {
+        napi_throw_type_error(env, nullptr, "First argument must be a buffer");
+        return nullptr;
+    }
+    status = napi_get_buffer_info(env, args[0], &bufferData, &bufferLength);
+    if (status != napi_ok || bufferLength != 140) {
+        napi_throw_error(env, nullptr, "Invalid header buffer");
+        return nullptr;
+    }
+    const char *hdr = static_cast<const char*>(bufferData);
 
-  if(!node::Buffer::HasInstance(header) || !node::Buffer::HasInstance(solution)) {
-  isolate->ThrowException(Exception::TypeError(
-    String::NewFromUtf8(isolate, "Arguments should be buffer objects.")));
-  return;
-  }
+    // Solution buffer
+    status = napi_is_buffer(env, args[1], &isBuffer);
+    if (!isBuffer || status != napi_ok) {
+        napi_throw_type_error(env, nullptr, "Second argument must be a buffer");
+        return nullptr;
+    }
+    status = napi_get_buffer_info(env, args[1], &bufferData, &bufferLength);
+    if (status != napi_ok) {
+        napi_throw_error(env, nullptr, "Invalid solution buffer");
+        return nullptr;
+    }
+    const char *soln = static_cast<const char*>(bufferData);
+    std::vector<unsigned char> vecSolution(soln, soln + bufferLength);
 
-  const char *hdr = node::Buffer::Data(header);
-  if(node::Buffer::Length(header) != 140) {
-	  //invalid hdr length
-	  args.GetReturnValue().Set(false);
-	  return;
-  }
-  const char *soln = node::Buffer::Data(solution);
+    // n and k values
+    unsigned int n = 200, k = 9;
+    if (argc == 4) {
+        uint32_t temp;
+        status = napi_get_value_uint32(env, args[2], &temp);
+        n = static_cast<unsigned int>(temp);
+        status = napi_get_value_uint32(env, args[3], &temp);
+        k = static_cast<unsigned int>(temp);
+    }
 
-  std::vector<unsigned char> vecSolution(soln, soln + node::Buffer::Length(solution));
-
-  bool result = verifyEH(hdr, vecSolution, n, k);
-  args.GetReturnValue().Set(result);
-
+    bool result = verifyEH(hdr, vecSolution, n, k);
+    napi_value returnValue;
+    status = napi_get_boolean(env, result, &returnValue);
+    return returnValue;
 }
 
 
-void Init(Handle<Object> exports) {
-  NODE_SET_METHOD(exports, "verify", Verify);
+napi_value Init(napi_env env, napi_value exports) {
+    napi_status status;
+    napi_value fn;
+
+    status = napi_create_function(env, nullptr, 0, Verify, nullptr, &fn);
+    if (status != napi_ok) {
+        napi_throw_error(env, nullptr, "Failed to create function");
+        return nullptr;
+    }
+
+    status = napi_set_named_property(env, exports, "verify", fn);
+    if (status != napi_ok) {
+        napi_throw_error(env, nullptr, "Failed to set property");
+        return nullptr;
+    }
+
+    return exports;
 }
 
-NODE_MODULE(equihashverify, Init)
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
